@@ -96,11 +96,12 @@ type Config struct {
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
+	// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kiro, github-copilot.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
 	// OAuthModelMappings defines global model name mappings for OAuth/file-backed auth channels.
 	// These mappings affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow.
+	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kiro, github-copilot.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
@@ -566,7 +567,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 // SanitizeOAuthModelMappings normalizes and deduplicates global OAuth model name mappings.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
-// and ensures (From, To) pairs are unique within each channel.
+// allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
 func (cfg *Config) SanitizeOAuthModelMappings() {
 	if cfg == nil || len(cfg.OAuthModelMappings) == 0 {
 		return
@@ -577,7 +578,6 @@ func (cfg *Config) SanitizeOAuthModelMappings() {
 		if channel == "" || len(mappings) == 0 {
 			continue
 		}
-		seenName := make(map[string]struct{}, len(mappings))
 		seenAlias := make(map[string]struct{}, len(mappings))
 		clean := make([]ModelNameMapping, 0, len(mappings))
 		for _, mapping := range mappings {
@@ -589,15 +589,10 @@ func (cfg *Config) SanitizeOAuthModelMappings() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			nameKey := strings.ToLower(name)
 			aliasKey := strings.ToLower(alias)
-			if _, ok := seenName[nameKey]; ok {
-				continue
-			}
 			if _, ok := seenAlias[aliasKey]; ok {
 				continue
 			}
-			seenName[nameKey] = struct{}{}
 			seenAlias[aliasKey] = struct{}{}
 			clean = append(clean, ModelNameMapping{Name: name, Alias: alias, Fork: mapping.Fork})
 		}
