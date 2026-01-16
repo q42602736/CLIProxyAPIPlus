@@ -139,6 +139,15 @@ func LoadKiroTokenFromPath(tokenPath string) (*KiroTokenData, error) {
 	return &token, nil
 }
 
+// ParseKiroTokenJSON parses a JSON byte slice into KiroTokenData.
+// This is used for importing tokens from stdin or other sources.
+func ParseKiroTokenJSON(data []byte, token *KiroTokenData) error {
+	if err := json.Unmarshal(data, token); err != nil {
+		return fmt.Errorf("invalid JSON format: %w", err)
+	}
+	return nil
+}
+
 // ListKiroTokenFiles lists all Kiro token files in the cache directory.
 // This supports multiple accounts by finding all token files.
 func ListKiroTokenFiles() ([]string, error) {

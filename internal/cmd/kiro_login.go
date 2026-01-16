@@ -3,6 +3,13 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os/exec"
+	"runtime"
+	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
@@ -206,3 +213,162 @@ func DoKiroImport(cfg *config.Config, options *LoginOptions) {
 	}
 	fmt.Println("Kiro token import successful!")
 }
+
+// DoKiroImportJSON imports Kiro token via a web page interface.
+// Opens a browser with a form to paste JSON, then imports the token.
+func DoKiroImportJSON(cfg *config.Config, options *LoginOptions) {
+	if options == nil {
+		options = &LoginOptions{}
+	}
+
+	// Find available port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Errorf("Failed to start server: %v", err)
+		return
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	var jsonData []byte
+	var wg sync.WaitGroup
+	wg.Add(1)
+	done := make(chan struct{})
+
+	mux := http.NewServeMux()
+
+	// Serve the HTML form
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, kiroImportHTMLPage)
+	})
+
+	// Handle form submission
+	mux.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		jsonData = body
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<html><body style="font-family:system-ui;text-align:center;padding:50px;">
+			<h2>JSON received! You can close this window.</h2></body></html>`)
+		wg.Done()
+		close(done)
+	})
+
+	server := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Handler: mux}
+
+	go func() {
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Errorf("Server error: %v", err)
+		}
+	}()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+	fmt.Printf("Opening browser: %s\n", url)
+	fmt.Println("Please paste your JSON in the browser and click Submit.")
+
+	// Open browser
+	openBrowser(url)
+
+	// Wait for submission or timeout
+	select {
+	case <-done:
+	case <-time.After(5 * time.Minute):
+		fmt.Println("Timeout waiting for JSON input")
+		server.Close()
+		return
+	}
+
+	server.Close()
+
+	if len(jsonData) == 0 {
+		log.Error("No JSON data received")
+		return
+	}
+
+	// Process the JSON
+	manager := newAuthManager()
+	authenticator := sdkAuth.NewKiroAuthenticator()
+	record, err := authenticator.ImportFromJSON(context.Background(), cfg, jsonData)
+	if err != nil {
+		log.Errorf("Kiro JSON import failed: %v", err)
+		return
+	}
+
+	savedPath, err := manager.SaveAuth(record, cfg)
+	if err != nil {
+		log.Errorf("Failed to save auth: %v", err)
+		return
+	}
+
+	if savedPath != "" {
+		fmt.Printf("Authentication saved to %s\n", savedPath)
+	}
+	if record != nil && record.Label != "" {
+		fmt.Printf("Imported as %s\n", record.Label)
+	}
+	fmt.Println("Kiro JSON import successful!")
+}
+
+// openBrowser opens the specified URL in the default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
+const kiroImportHTMLPage = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Kiro Token Import</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        h1 { color: #333; }
+        textarea { width: 100%; height: 300px; font-family: monospace; font-size: 12px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        button { background: #0066cc; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #0055aa; }
+        .hint { color: #666; font-size: 14px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Kiro Token Import</h1>
+    <p>Paste your Kiro token JSON below:</p>
+    <textarea id="json" placeholder='{
+  "email": "user@example.com",
+  "provider": "BuilderId",
+  "accessToken": "aoaAAAAA...",
+  "refreshToken": "aorAAAAA...",
+  "clientId": "...",
+  "clientSecret": "...",
+  "region": "us-east-1"
+}'></textarea>
+    <br>
+    <button onclick="submit()">Submit</button>
+    <p class="hint">After clicking Submit, you can close this window.</p>
+    <script>
+        function submit() {
+            const json = document.getElementById('json').value;
+            if (!json.trim()) { alert('Please paste JSON first'); return; }
+            fetch('/submit', { method: 'POST', body: json })
+                .then(r => r.text())
+                .then(html => { document.body.innerHTML = html; })
+                .catch(e => alert('Error: ' + e));
+        }
+    </script>
+</body>
+</html>`

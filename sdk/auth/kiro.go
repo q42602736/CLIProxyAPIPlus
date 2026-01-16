@@ -468,3 +468,91 @@ func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, aut
 
 	return updated, nil
 }
+
+// ImportFromJSON imports token from a JSON byte slice (e.g., from stdin).
+// The JSON should contain accessToken, refreshToken, and optionally other fields.
+func (a *KiroAuthenticator) ImportFromJSON(ctx context.Context, cfg *config.Config, jsonData []byte) (*coreauth.Auth, error) {
+	var tokenData kiroauth.KiroTokenData
+	if err := kiroauth.ParseKiroTokenJSON(jsonData, &tokenData); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	if tokenData.AccessToken == "" {
+		return nil, fmt.Errorf("accessToken is required in JSON")
+	}
+
+	// Extract email from JWT if not already set
+	if tokenData.Email == "" {
+		tokenData.Email = kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
+	}
+
+	// Extract identifier for file naming
+	idPart := extractKiroIdentifier(tokenData.Email, tokenData.ProfileArn)
+	// Sanitize provider to prevent path traversal
+	provider := kiroauth.SanitizeEmailForFilename(strings.ToLower(strings.TrimSpace(tokenData.Provider)))
+	if provider == "" {
+		provider = "json-import"
+	}
+
+	now := time.Now()
+	fileName := fmt.Sprintf("kiro-%s-%s.json", provider, idPart)
+
+	// Build metadata
+	metadata := map[string]any{
+		"type":          "kiro",
+		"access_token":  tokenData.AccessToken,
+		"refresh_token": tokenData.RefreshToken,
+		"profile_arn":   tokenData.ProfileArn,
+		"auth_method":   tokenData.AuthMethod,
+		"provider":      tokenData.Provider,
+		"email":         tokenData.Email,
+	}
+	if tokenData.ExpiresAt != "" {
+		metadata["expires_at"] = tokenData.ExpiresAt
+	}
+	if tokenData.ClientID != "" {
+		metadata["client_id"] = tokenData.ClientID
+	}
+	if tokenData.ClientSecret != "" {
+		metadata["client_secret"] = tokenData.ClientSecret
+	}
+	if tokenData.Region != "" {
+		metadata["region"] = tokenData.Region
+	}
+	if tokenData.StartURL != "" {
+		metadata["start_url"] = tokenData.StartURL
+	}
+
+	// Parse expires_at for NextRefreshAfter
+	expiresAt := time.Now().Add(1 * time.Hour) // default
+	if tokenData.ExpiresAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, tokenData.ExpiresAt); err == nil {
+			expiresAt = parsed
+		}
+	}
+
+	record := &coreauth.Auth{
+		ID:        fileName,
+		Provider:  "kiro",
+		FileName:  fileName,
+		Label:     fmt.Sprintf("kiro-%s", provider),
+		Status:    coreauth.StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Metadata:  metadata,
+		Attributes: map[string]string{
+			"profile_arn": tokenData.ProfileArn,
+			"source":      "json-import",
+			"email":       tokenData.Email,
+		},
+		NextRefreshAfter: expiresAt.Add(-5 * time.Minute),
+	}
+
+	if tokenData.Email != "" {
+		fmt.Printf("\n✓ Imported Kiro token from JSON (Provider: %s, Account: %s)\n", tokenData.Provider, tokenData.Email)
+	} else {
+		fmt.Printf("\n✓ Imported Kiro token from JSON (Provider: %s)\n", tokenData.Provider)
+	}
+
+	return record, nil
+}
