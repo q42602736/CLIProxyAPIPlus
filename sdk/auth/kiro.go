@@ -486,6 +486,16 @@ func (a *KiroAuthenticator) ImportFromJSON(ctx context.Context, cfg *config.Conf
 		tokenData.Email = kiroauth.ExtractEmailFromJWT(tokenData.AccessToken)
 	}
 
+	// Auto-detect auth_method from provider if not set
+	if tokenData.AuthMethod == "" {
+		switch strings.ToLower(tokenData.Provider) {
+		case "builderid", "builder-id", "aws":
+			tokenData.AuthMethod = "builder-id"
+		case "idc", "identity-center":
+			tokenData.AuthMethod = "idc"
+		}
+	}
+
 	// Extract identifier for file naming
 	idPart := extractKiroIdentifier(tokenData.Email, tokenData.ProfileArn)
 	// Sanitize provider to prevent path traversal
