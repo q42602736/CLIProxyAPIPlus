@@ -401,7 +401,7 @@ func (a *KiroAuthenticator) ImportFromJSON(ctx context.Context, cfg *config.Conf
 	}
 
 	// Extract identifier for file naming
-	idPart := extractKiroIdentifier(tokenData.Email, tokenData.ProfileArn)
+	idPart := extractKiroIdentifier(tokenData.Email, tokenData.ProfileArn, tokenData.ClientID)
 	// Sanitize provider to prevent path traversal
 	provider := kiroauth.SanitizeEmailForFilename(strings.ToLower(strings.TrimSpace(tokenData.Provider)))
 	if provider == "" {
